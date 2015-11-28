@@ -20,7 +20,8 @@ LispyParser* new_parser() {
       number: /-?[0-9]+/;                                     \
       symbol: '+' | '-' | '*' | '/' | '%' | '^'		      \
             | \"list\" | \"head\" | \"tail\"		      \
-            | \"join\" | \"eval\";			      \
+            | \"join\" | \"eval\" | \"cons\"		      \
+            | \"len\" | \"init\";			      \
       sexpr: '(' <expr>* ')';	                              \
       qexpr: '{' <expr>* '}';						\
       expr: <symbol> | <decimal> | <number> | <sexpr> | <qexpr>;	      \
@@ -346,10 +347,13 @@ lval_t* builtin_op(lval_t* v, char* op) {
   return x;
 }
 
-lval_t* builtin_head(lval_t* v) {
-  LVAL_ASSERT(v, v->value.sexpr.count == 1,
-	      "Invalid amount of arguments passed to 'head'!");
+#define LVAL_ASSERT_ARGS_EQ(_v_, _n_, _fn_) \
+  LVAL_ASSERT(_v_, (_v_)->value.sexpr.count == (_n_), \
+	      "Invalid amount of arguments passed to '" _fn_ "'!")
 
+lval_t* builtin_head(lval_t* v) {
+  LVAL_ASSERT_ARGS_EQ(v, 1, "head");
+  
   lval_t* a = lval_take(v, 0);
   
   LVAL_ASSERT(a, a->type == LVAL_QEXPR,
@@ -365,9 +369,8 @@ lval_t* builtin_head(lval_t* v) {
 }
 
 lval_t* builtin_tail(lval_t* v) {
-  LVAL_ASSERT(v, v->value.sexpr.count == 1,
-	      "Invalid amount of arguments passed to 'tail'!");
-
+  LVAL_ASSERT_ARGS_EQ(v, 1, "tail");
+  
   lval_t* a = lval_take(v, 0);
   
   LVAL_ASSERT(a, a->type == LVAL_QEXPR,
@@ -392,9 +395,8 @@ lval_t* builtin_list(lval_t* v) {
 }
 
 lval_t* builtin_eval(lval_t* v) {
-  LVAL_ASSERT(v, v->value.sexpr.count == 1,
-	      "Passed invalid amount of arguments to 'eval'!");
-
+  LVAL_ASSERT_ARGS_EQ(v, 1, "eval");
+  
   lval_t* a = lval_take(v, 0);
   LVAL_ASSERT(a, a->type == LVAL_QEXPR,
 	      "Passed a type other than a Q-Expression to 'eval'!");
@@ -429,12 +431,58 @@ lval_t* builtin_join(lval_t* v) {
   return a;
 }
 
+lval_t* builtin_cons(lval_t* v) {
+  // check for correct arguments
+  LVAL_ASSERT_ARGS_EQ(v, 2, "cons");
+  
+  // check argument types
+  lval_t* q = v->value.sexpr.cell[1];
+  LVAL_ASSERT(v, q->type == LVAL_QEXPR,
+	      "Second argument of 'cons' should be a Q-Expression!");
+
+  // do the actual work
+  q = lval_qexpr();
+  lval_add(q, lval_pop(v, 0));
+  q = lval_join(q, lval_take(v, 0));
+
+  return q;
+}
+
+lval_t* builtin_len(lval_t* v) {
+  LVAL_ASSERT_ARGS_EQ(v, 1, "len");
+  v = lval_take(v, 0);
+  LVAL_ASSERT(v, v->type == LVAL_QEXPR,
+	      "A type other than a Q-Expression passed to 'len'!");
+
+  lval_t* n = lval_number(v->value.sexpr.count);
+  lval_delete(v);
+  return n;
+}
+
+lval_t* builtin_init(lval_t* v) {
+  LVAL_ASSERT_ARGS_EQ(v, 1, "init");
+  v = lval_take(v, 0);
+
+  LVAL_ASSERT(v, v->type == LVAL_QEXPR,
+	      "Passed an invalid type to 'v'!");
+  LVAL_ASSERT(v, v->value.sexpr.count != 0,
+	      "Passed an empty Q-Expression to 'init'!");
+
+  // delete the head of the Q-Expression
+  lval_delete(lval_pop(v, v->value.sexpr.count - 1));
+
+  return v;
+}
+
 lval_t* builtin(lval_t* v, char* func) {
   if(strcmp("head", func) == 0) return builtin_head(v);
   if(strcmp("tail", func) == 0) return builtin_tail(v);
   if(strcmp("list", func) == 0) return builtin_list(v);
   if(strcmp("eval", func) == 0) return builtin_eval(v);
   if(strcmp("join", func) == 0) return builtin_join(v);
+  if(strcmp("cons", func) == 0) return builtin_cons(v);
+  if(strcmp("len", func) == 0) return builtin_len(v);
+  if(strcmp("init", func) == 0) return builtin_init(v);
   if(strstr("+-*/%^", func)) return builtin_op(v, func);
   // At this point all hope is lost
   lval_delete(v);
