@@ -4,7 +4,7 @@
 #include "mpc.h"
 
 typedef struct {
-  mpc_parser_t *number, *decimal, *symbol, *expr, *sexpr, *lispy;
+  mpc_parser_t *number, *decimal, *symbol, *expr, *sexpr, *qexpr, *lispy;
 } LispyParser;
 
 LispyParser* new_parser();
