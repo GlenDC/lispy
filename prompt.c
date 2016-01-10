@@ -8,7 +8,7 @@
 #include <editline/readline.h>
 
 int main(int argc, char** argv) {
-  puts("Lispy version 0.0.5");
+  puts("Lispy version 0.0.6");
   puts("Press C-c to quit\n");
 
   LispyParser* lispy = new_parser();
