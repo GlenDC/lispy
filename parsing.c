@@ -2,7 +2,8 @@
 #include "parsing.h"
 
 lenv_t* lenv_new(void);
-void lenv_del(lenv_t* env);
+lenv_t* lenv_copy(lenv_t* env);
+void lenv_delete(lenv_t* env);
 void lenv_add_builtins(lenv_t* a);
 
 LispyParser* new_parser() {
@@ -56,7 +57,7 @@ void destroy_parser(LispyParser** parser) {
       _parser->qexpr,
       _parser->lispy);
 
-    lenv_del(_parser->env);
+    lenv_delete(_parser->env);
 
     free(_parser);
     parser = NULL;
@@ -87,7 +88,7 @@ lval_t* lval_err(char* fmt, ...) {
 
 char* ltype_name(int type) {
   switch(type) {
-  case LVAL_FUN: return "Function";
+  case LVAL_FUNCTION: return "Function";
   case LVAL_NUMBER: return "Number";
   case LVAL_DECIMAL: return "Decimals";
   case LVAL_ERROR: return "Error";
@@ -152,16 +153,34 @@ lval_t* lval_qexpr(void) {
 
 lval_t* lval_fun(lbuiltin fun) {
   lval_t* val = malloc(sizeof(lval_t));
-  val->type = LVAL_FUN;
-  val->value.fun = fun;
+  val->type = LVAL_FUNCTION;
+  val->value.function.builtin = fun;
+  return val;
+}
+
+lval_t* lval_lambda(lval_t* formals, lval_t* body) {
+  lval_t* val = malloc(sizeof(lval_t));
+  val->type = LVAL_FUNCTION;
+  val->value.function.builtin = NULL;
+  val->value.function.env = lenv_new();
+  val->value.function.formals = formals;
+  val->value.function.body = body;
   return val;
 }
 
 void lval_delete(lval_t* v) {
   switch(v->type) {
-    case LVAL_NUMBER: break;
-    case LVAL_DECIMAL: break;
-    case LVAL_FUN: break;
+    case LVAL_NUMBER:
+    case LVAL_DECIMAL:
+      break;
+
+    case LVAL_FUNCTION:
+      if(v->value.function.builtin == NULL) {
+	lval_delete(v->value.function.formals);
+	lval_delete(v->value.function.body);
+	lenv_delete(v->value.function.env);
+      }
+      break;
 
     case LVAL_ERROR:
       free(v->value.error);
@@ -189,30 +208,41 @@ lval_t* lval_copy(lval_t* v) {
   x->type = v->type;
 
   switch(x->type) {
-  case LVAL_NUMBER:
-  case LVAL_DECIMAL:
-  case LVAL_FUN:
-    x->value = v->value;
-    break;
+    case LVAL_NUMBER:
+    case LVAL_DECIMAL:
+      x->value = v->value;
+      break;
+  
+    case LVAL_FUNCTION:
+      if(v->value.function.builtin) {
+	x->value.function.builtin = v->value.function.builtin;
+      }
+      else {
+	x->value.function.builtin = NULL;
+	x->value.function.env = lenv_copy(v->value.function.env);
+	x->value.function.body = lval_copy(v->value.function.body);
+	x->value.function.formals = lval_copy(v->value.function.formals);
+      }
+      break;
 
-  case LVAL_ERROR:
-    x->value.error = malloc(sizeof(char) * strlen(v->value.error));
-    strcpy(x->value.error, v->value.error);
-    break;
+    case LVAL_ERROR:
+      x->value.error = malloc(sizeof(char) * strlen(v->value.error));
+      strcpy(x->value.error, v->value.error);
+      break;
 
-  case LVAL_SYMBOL:
-    x->value.symbol = malloc(sizeof(char) * strlen(v->value.symbol));
-    strcpy(x->value.symbol, v->value.symbol);
-    break;
+    case LVAL_SYMBOL:
+      x->value.symbol = malloc(sizeof(char) * strlen(v->value.symbol));
+      strcpy(x->value.symbol, v->value.symbol);
+      break;
 
-  case LVAL_SEXPR:
-  case LVAL_QEXPR:
-    x->value.sexpr.count = v->value.sexpr.count;
-    x->value.sexpr.cell = malloc(sizeof(lval_t) * x->value.sexpr.count);
-    for (int i = 0; i < x->value.sexpr.count; ++i) {
-      x->value.sexpr.cell[i] = lval_copy(v->value.sexpr.cell[i]);
-    }
-    break;
+    case LVAL_SEXPR:
+    case LVAL_QEXPR:
+      x->value.sexpr.count = v->value.sexpr.count;
+      x->value.sexpr.cell = malloc(sizeof(lval_t) * x->value.sexpr.count);
+      for (int i = 0; i < x->value.sexpr.count; ++i) {
+	x->value.sexpr.cell[i] = lval_copy(v->value.sexpr.cell[i]);
+      }
+      break;
   }
 
   return x;
@@ -220,12 +250,28 @@ lval_t* lval_copy(lval_t* v) {
 
 lenv_t* lenv_new(void) {
   lenv_t* env = malloc(sizeof(lenv_t));
+  env->parent = NULL;
   env->count = 0;
   env->values = NULL;
   return env;
 }
 
-void lenv_del(lenv_t* env) {
+lenv_t* lenv_copy(lenv_t* env) {
+  lenv_t* x = malloc(sizeof(lenv_t));
+  x->parent = env->parent;
+  x->count = env->count;
+  x->values = malloc(sizeof(lenv_val_t) * x->count);
+  for (int i = 0; i < x->count ; ++i) {
+    lenv_val_t* val = &env->values[i];
+    x->values[i].symbol = malloc(sizeof(char) * (strlen(val->symbol) + 1));
+    strcpy(x->values[i].symbol, val->symbol);
+    x->values[i].value = lval_copy(val->value);
+  }
+
+  return x;
+}
+
+void lenv_delete(lenv_t* env) {
   for(int i = 0; i < env->count; ++i) {
     free(env->values[i].symbol);
     lval_delete(env->values[i].value);
@@ -242,8 +288,15 @@ lval_t* lenv_get(lenv_t* env, lval_t* key) {
     }
   }
 
+  // try to look in the parent
+  if(env->parent) {
+    return lenv_get(env->parent, key);
+  }
+
   return lval_error("unbound symbol!");
 }
+
+typedef void(*lenv_var_assignment)(lenv_t*, lval_t*, lval_t*);
 
 void lenv_put(lenv_t* env, lval_t* key, lval_t* value) {
   for(int i = 0; i < env->count; ++i) {
@@ -258,9 +311,17 @@ void lenv_put(lenv_t* env, lval_t* key, lval_t* value) {
   // create new value
   env->values = realloc(env->values, sizeof(lenv_val_t) * (env->count+1));
   env->values[env->count].value = lval_copy(value);
-  env->values[env->count].symbol = malloc(sizeof(char) * strlen(key->value.symbol));
+  env->values[env->count].symbol = malloc(sizeof(char) * (strlen(key->value.symbol) + 1));
   strcpy(env->values[env->count].symbol, key->value.symbol);
   env->count++;
+}
+
+/**
+ * Similar to lenv_put, but defines it globally rather than locally
+ */
+void lenv_def(lenv_t* env, lval_t* key, lval_t* value) {
+  while(env->parent) env = env->parent;
+  lenv_put(env, key, value);
 }
 
 lval_t* lval_read_number(mpc_ast_t* node) {
@@ -340,7 +401,14 @@ void lval_print(lval_t* v) {
     case LVAL_SYMBOL: printf("%s", v->value.symbol); break;
     case LVAL_SEXPR: lval_expr_print(v, '(', ')'); break; 
     case LVAL_QEXPR: lval_expr_print(v, '{', '}'); break;
-    case LVAL_FUN: printf("<function>"); break;
+    case LVAL_FUNCTION:
+      if(v->value.function.builtin) {
+	printf("<builtin>");
+      }
+      else {
+	printf("(\\ "); lval_print(v->value.function.formals);
+	putchar(' '); lval_print(v->value.function.body); putchar(')');
+      } break;
   }
 }
 
@@ -470,12 +538,24 @@ lval_t* builtin_op(lenv_t* e, lval_t* v, char* op) {
 	      "Got %s, expected %s.", (_fn_), \
 	      ltype_name(_x_), ltype_name(_y_));
 
+#define LVAL_ASSERT_SELF_TYPE_EQ(_a_, _t_, _fn_)	\
+  LVAL_ASSERT((_a_), (_a_)->type == (_t_), \
+	      "Passed an invalid type to '%s'. " \
+	      "Got %s, expected %s.", (_fn_), \
+	      ltype_name((_a_)->type), ltype_name(_t_));
+
+#define LVAL_ASSERT_CELL_TYPE_EQ(_a_, _n_, _t_, _fn_)	\
+  LVAL_ASSERT((_a_), (_a_)->value.sexpr.cell[_n_]->type == (_t_),			\
+	      "Passed an invalid type to '%s'. " \
+	      "Got %s, expected %s.", (_fn_), \
+	      ltype_name((_a_)->value.sexpr.cell[_n_]->type), ltype_name(_t_));
+
 lval_t* builtin_head(lenv_t* e, lval_t* v) {
   LVAL_ASSERT_ARGS_EQ(v, 1, "head");
   
   lval_t* a = lval_take(v, 0);
   
-  LVAL_ASSERT_TYPE_EQ(a, a->type, LVAL_QEXPR, "head");
+  LVAL_ASSERT_SELF_TYPE_EQ(a, LVAL_QEXPR, "head");
 
   // delete all elements except the head
   while(a->value.sexpr.count > 1)
@@ -489,7 +569,7 @@ lval_t* builtin_tail(lenv_t* e, lval_t* v) {
   
   lval_t* a = lval_take(v, 0);
   
-  LVAL_ASSERT_TYPE_EQ(a, a->type, LVAL_QEXPR, "tail");
+  LVAL_ASSERT_SELF_TYPE_EQ(a, LVAL_QEXPR, "tail");
 
   // delete the head of the Q-Expression
   lval_delete(lval_pop(a, 0));
@@ -500,7 +580,7 @@ lval_t* builtin_tail(lenv_t* e, lval_t* v) {
 lval_t* lval_eval(lenv_t* e, lval_t* v);
 
 lval_t* builtin_list(lenv_t* e, lval_t* v) {
-  LVAL_ASSERT_TYPE_EQ(v, v->type, LVAL_SEXPR, "list");
+  LVAL_ASSERT_SELF_TYPE_EQ(v, LVAL_SEXPR, "list");
   v->type = LVAL_QEXPR;
   return v;
 }
@@ -509,7 +589,7 @@ lval_t* builtin_eval(lenv_t* e, lval_t* v) {
   LVAL_ASSERT_ARGS_EQ(v, 1, "eval");
   
   lval_t* a = lval_take(v, 0);
-  LVAL_ASSERT_TYPE_EQ(a, a->type, LVAL_QEXPR, "eval");
+  LVAL_ASSERT_SELF_TYPE_EQ(a, LVAL_QEXPR, "eval");
 
   a->type = LVAL_SEXPR;
   return lval_eval(e, a);
@@ -530,7 +610,7 @@ lval_t* builtin_join(lenv_t* e, lval_t* v) {
 	      v->value.sexpr.count);
 
   for(int i = 0; i < v->value.sexpr.count; ++i) {
-    LVAL_ASSERT_TYPE_EQ(v, v->value.sexpr.cell[i]->type, LVAL_QEXPR, "join");
+    LVAL_ASSERT_CELL_TYPE_EQ(v, i, LVAL_QEXPR, "join");
   }
   
   lval_t* a = lval_pop(v, 0);
@@ -548,7 +628,7 @@ lval_t* builtin_cons(lenv_t* e, lval_t* v) {
   
   // check argument types
   lval_t* q = v->value.sexpr.cell[1];
-  LVAL_ASSERT_TYPE_EQ(v, q->type, LVAL_QEXPR, "cons");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 1, LVAL_QEXPR, "cons");
 
   // do the actual work
   q = lval_qexpr();
@@ -561,7 +641,7 @@ lval_t* builtin_cons(lenv_t* e, lval_t* v) {
 lval_t* builtin_len(lenv_t* e, lval_t* v) {
   LVAL_ASSERT_ARGS_EQ(v, 1, "len");
   v = lval_take(v, 0);
-  LVAL_ASSERT_TYPE_EQ(v, v->type, LVAL_QEXPR, "len");
+  LVAL_ASSERT_SELF_TYPE_EQ(v, LVAL_QEXPR, "len");
 
   lval_t* n = lval_number(v->value.sexpr.count);
   lval_delete(v);
@@ -572,7 +652,7 @@ lval_t* builtin_init(lenv_t* e, lval_t* v) {
   LVAL_ASSERT_ARGS_EQ(v, 1, "init");
   v = lval_take(v, 0);
 
-  LVAL_ASSERT_TYPE_EQ(v, v->type, LVAL_QEXPR, "init");
+  LVAL_ASSERT_SELF_TYPE_EQ(v, LVAL_QEXPR, "init");
 
   // delete the head of the Q-Expression
   lval_delete(lval_pop(v, v->value.sexpr.count - 1));
@@ -604,29 +684,38 @@ lval_t* builtin_pow(lenv_t* e, lval_t* v) {
   return builtin_op(e, v, "^");
 }
 
-lval_t* builtin_def(lenv_t* e, lval_t* v) {
-  LVAL_ASSERT_TYPE_EQ(v, v->value.sexpr.cell[0]->type, LVAL_QEXPR, "def");
+lval_t* builtin_var(lenv_t* e, lval_t* v, char* func, lenv_var_assignment put) {
+  LVAL_ASSERT_ARGS_EQ(v, 2, func);
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 0, LVAL_QEXPR, func);
 
   /* First argument is Symbol List */
   lval_t* symbols = v->value.sexpr.cell[0];
 
   /* Make sure that each value in the list is actually a Symbol */
   for(int i = 0; i < symbols->value.sexpr.count; ++i) {
-    LVAL_ASSERT_TYPE_EQ(v, symbols->value.sexpr.cell[i]->type, LVAL_SYMBOL, "def");
+    LVAL_ASSERT_TYPE_EQ(v, symbols->value.sexpr.cell[i]->type, LVAL_SYMBOL, func);
   }
 
   /* Check if number of values equals number of arguments passed */
   LVAL_ASSERT(v, symbols->value.sexpr.count == (v->value.sexpr.count-1),
-		 "Function 'def' cannot define incorrect"
-		 "number of values to synbols");
+		 "Function %s cannot define incorrect"
+	         "number of values to synbols", func);
 
   /* Assign copies of values to symbols */
   for(int i = 0; i < symbols->value.sexpr.count; ++i) {
-    lenv_put(e, symbols->value.sexpr.cell[i], v->value.sexpr.cell[i+1]);
+    put(e, symbols->value.sexpr.cell[i], v->value.sexpr.cell[i+1]);
   }
 
   lval_delete(v);
   return lval_sexpr();
+}
+
+lval_t* builtin_put(lenv_t* e, lval_t* v) {
+  return builtin_var(e, v, "=", lenv_put);
+}
+
+lval_t* builtin_def(lenv_t* e, lval_t* v) {
+  return builtin_var(e, v, "def", lenv_def);
 }
 
 lval_t* builtin_print_env(lenv_t* e, lval_t* v) {
@@ -645,6 +734,24 @@ lval_t* builtin_exit(lenv_t* e, lval_t* v) {
   LVAL_ASSERT_ARGS_EQ(v, 0, "exit");  
   exit(0);
   return lval_sexpr();
+}
+
+lval_t* builtin_lambda(lenv_t* e, lval_t* v) {
+  // Make sure that we only have 2 QEXPR children
+  LVAL_ASSERT_ARGS_EQ(v, 2, "\\");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 0, LVAL_QEXPR, "\\");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 1, LVAL_QEXPR, "\\");
+
+  lval_t* formals = v->value.sexpr.cell[0];
+  for (int i = 0; i < formals->value.sexpr.count; ++i) {
+    LVAL_ASSERT_TYPE_EQ(v, formals->value.sexpr.cell[i]->type, LVAL_SYMBOL, "\\");
+  }
+
+  formals = lval_pop(v, 0);
+  lval_t* body = lval_pop(v, 0);
+  lval_delete(v);
+
+  return lval_lambda(formals, body);
 }
 
 void lenv_add_builtin(lenv_t* e, char* name, lbuiltin fun) {
@@ -676,14 +783,54 @@ void lenv_add_builtins(lenv_t* e) {
 
   /* User Functions */
   lenv_add_builtin(e, "def", builtin_def);
+  lenv_add_builtin(e, "=", builtin_put);
+  lenv_add_builtin(e, "\\", builtin_lambda);
 
   /* Debug Functions */
   lenv_add_builtin(e, "print-env", builtin_print_env);
   lenv_add_builtin(e, "exit", builtin_exit);
 }
 
+lval_t* lval_call(lenv_t* e, lval_t* f, lval_t* a) {
+  /* When builtin is defined, simply call it */
+  if(f->value.function.builtin) {
+    return f->value.function.builtin(e, a);
+  }
+
+  int given = a->value.sexpr.count;
+  int total = f->value.function.formals->value.sexpr.count;
+
+  /* While arguments still remain to be processed */
+  while(a->value.sexpr.count) {
+    if (f->value.function.formals->value.sexpr.count == 0) {
+      lval_delete(a);
+      return lval_err(
+	"Function passed too many arguments. "
+	"Got %i, expected %i.", given, total);
+    }
+
+    lval_t* symbol = lval_pop(f->value.function.formals, 0);
+    lval_t* value = lval_pop(a, 0);
+
+    lenv_put(f->value.function.env, symbol, value);
+    lval_delete(symbol);
+    lval_delete(value);
+  }
+
+  /* if all formals have been evaluated, we can evaluate */
+  if(f->value.function.formals->value.sexpr.count == 0) {
+    f->value.function.env->parent = e;
+    return builtin_eval(
+      f->value.function.env,
+      lval_add(lval_sexpr(), lval_copy(f->value.function.body)));
+  }
+  
+  /* otherwise return */
+  return lval_copy(f);
+}
+
 lval_t* lval_eval_sexpr(lenv_t* e, lval_t* v) {
-  // evaluate all cells
+  /* evaluate all cells */
   for(int i = 0; i < v->value.sexpr.count; ++i) {
     v->value.sexpr.cell[i] = lval_eval(e, v->value.sexpr.cell[i]);
   }
@@ -693,22 +840,22 @@ lval_t* lval_eval_sexpr(lenv_t* e, lval_t* v) {
       return lval_take(v, i);
   }
 
-  // check for early returns
+  /* check for early returns */
   if(v->value.sexpr.count == 0)
     return v; // empty expression
   if(v->value.sexpr.count == 1
-     && v->value.sexpr.cell[0]->type != LVAL_FUN)
+     && v->value.sexpr.cell[0]->type != LVAL_FUNCTION)
     return lval_take(v, 0); // single expression
 
-  // ensure first element is a function
+  /* ensure first element is a function */
   lval_t* f = lval_pop(v, 0);
-  if(f->type != LVAL_FUN) {
+  if(f->type != LVAL_FUNCTION) {
     lval_delete(f);
     lval_delete(v);
     return lval_error("first element is not a function!");
   }
 
-  lval_t* result = f->value.fun(e, v);
+  lval_t* result = lval_call(e, f, v);
   lval_delete(f);
   return result;
 }
@@ -720,11 +867,11 @@ lval_t* lval_eval(lenv_t* e, lval_t* v) {
     return x;
   }
   
-  // evaluate s-expression
+  /* evaluate s-expression */
   if(v->type == LVAL_SEXPR)
     return lval_eval_sexpr(e, v);
 
-  // all other types stay the same
+  /* all other types stay the same */
   return v;
 }
 

@@ -18,7 +18,7 @@ enum lval_type {
   LVAL_SYMBOL,
   LVAL_SEXPR,
   LVAL_QEXPR,
-  LVAL_FUN,
+  LVAL_FUNCTION,
 };
 
 typedef struct lval_t {
@@ -32,23 +32,29 @@ typedef struct lval_t {
       int count;
       struct lval_t** cell;
     } sexpr;
-    lbuiltin fun;
+    struct function {
+      lbuiltin builtin;
+      struct lenv_t* env;
+      struct lval_t* formals;
+      struct lval_t* body;
+    } function;
   } value;
 } lval_t;
 
 typedef struct lenv_val_t {
   char* symbol;
-  lval_t* value;
+  struct lval_t* value;
 } lenv_val_t;
 
 typedef struct lenv_t {
+  lenv_t* parent;
   int count;
-  lenv_val_t* values;
+  struct lenv_val_t* values;
 } lenv_t;
 
 typedef struct {
   mpc_parser_t *number, *decimal, *symbol, *expr, *sexpr, *qexpr, *lispy;
-  lenv_t* env;
+  struct lenv_t* env;
 } LispyParser;
 
 LispyParser* new_parser();
