@@ -8,8 +8,11 @@
 #include <editline/readline.h>
 
 int main(int argc, char** argv) {
-  puts("Lispy version 0.0.6");
+  puts("Lispy version 0.0.8");
   puts("Press C-c to quit\n");
+
+  // extra's
+  // Make macro to easier get union child
 
   LispyParser* lispy = new_parser();
   

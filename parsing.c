@@ -802,7 +802,7 @@ lval_t* lval_call(lenv_t* e, lval_t* f, lval_t* a) {
 
   /* While arguments still remain to be processed */
   while(a->value.sexpr.count) {
-    if (f->value.function.formals->value.sexpr.count == 0) {
+    if(f->value.function.formals->value.sexpr.count == 0) {
       lval_delete(a);
       return lval_err(
 	"Function passed too many arguments. "
@@ -810,11 +810,46 @@ lval_t* lval_call(lenv_t* e, lval_t* f, lval_t* a) {
     }
 
     lval_t* symbol = lval_pop(f->value.function.formals, 0);
+
+    /* Special case for the '&' symbol */
+    if(strcmp(symbol->value.symbol, "&") == 0) {
+      /* Make sure we actually have one argument left */
+      if(f->value.function.formals->value.sexpr.count != 1) {
+	lval_delete(a);
+	return lval_err("Function format invalid. "
+		        "Symbol '&' is not followed by single symbol.");
+      }
+
+      lval_t* vsymbol = lval_pop(f->value.function.formals, 0);
+      lenv_put(f->value.function.env, vsymbol, builtin_list(e, a));
+      lval_delete(symbol); lval_delete(vsymbol);
+      break;
+    }
+    
     lval_t* value = lval_pop(a, 0);
 
     lenv_put(f->value.function.env, symbol, value);
     lval_delete(symbol);
     lval_delete(value);
+  }
+
+  /* Arguments have been consumed and can be cleaned up */
+  lval_delete(a);
+
+  if(f->value.function.formals->value.sexpr.count > 0
+     && strcmp(f->value.function.formals->value.sexpr.cell[0]->value.symbol, "&") == 0) {
+    if(f->value.function.formals->value.sexpr.count != 2) {
+	return lval_err("Function format invalid. "
+		        "Symbol '&' is not followed by single symbol.");
+    }
+
+    lval_delete(lval_pop(f->value.function.formals, 0));
+
+    lval_t* symbol = lval_pop(f->value.function.formals, 0);
+    lval_t* value = lval_qexpr();
+
+    lenv_put(f->value.function.env, symbol, value);
+    lval_delete(symbol); lval_delete(value);
   }
 
   /* if all formals have been evaluated, we can evaluate */
