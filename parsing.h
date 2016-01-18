@@ -14,6 +14,7 @@ typedef lval_t*(*lbuiltin)(lenv_t*, lval_t*);
 enum lval_type {
   LVAL_NUMBER,
   LVAL_DECIMAL,
+  LVAL_BOOLEAN,
   LVAL_ERROR,
   LVAL_SYMBOL,
   LVAL_SEXPR,
@@ -28,6 +29,7 @@ typedef struct lval_t {
     char* symbol;
     long number;
     double decimal;
+    char boolean;
     struct sexpr {
       int count;
       struct lval_t** cell;
@@ -53,7 +55,7 @@ typedef struct lenv_t {
 } lenv_t;
 
 typedef struct {
-  mpc_parser_t *number, *decimal, *symbol, *expr, *sexpr, *qexpr, *lispy;
+  mpc_parser_t *number, *decimal, *boolean, *symbol, *expr, *sexpr, *qexpr, *lispy;
   struct lenv_t* env;
 } LispyParser;
 

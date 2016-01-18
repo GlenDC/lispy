@@ -12,6 +12,7 @@ LispyParser* new_parser() {
   // Create some parsers
   parser->number = mpc_new("number");
   parser->decimal = mpc_new("decimal");
+  parser->boolean = mpc_new("boolean");
   parser->symbol = mpc_new("symbol");
   parser->expr = mpc_new("expr");
   parser->sexpr = mpc_new("sexpr");
@@ -23,14 +24,16 @@ LispyParser* new_parser() {
 	    "                                                           \
       decimal: /-?[0-9]+[.][0-9]+/;					\
       number: /-?[0-9]+/;						\
+      boolean: \"true\" | \"false\";					\
       symbol: /[a-zA-Z0-9_+\\-*\\/\\\\=<>!&]+/;				\
       sexpr: '(' <expr>* ')';						\
       qexpr: '{' <expr>* '}';						\
-      expr: <decimal> | <number> | <sexpr> | <qexpr> | <symbol> ;	\
+      expr: <decimal> | <number> | <boolean> | <sexpr> | <qexpr> | <symbol> ;	\
       lispy: /^/ <expr>* /$/;						\
     ",
     parser->number,
     parser->decimal,
+    parser->boolean,
     parser->symbol,
     parser->sexpr,
     parser->expr,
@@ -48,9 +51,10 @@ void destroy_parser(LispyParser** parser) {
     LispyParser* _parser = *parser;
     // Undefine and Delete our parser
     mpc_cleanup(
-      7,
+      8,
       _parser->number,
       _parser->decimal,
+      _parser->boolean,
       _parser->symbol,
       _parser->expr,
       _parser->sexpr,
@@ -90,7 +94,8 @@ char* ltype_name(int type) {
   switch(type) {
   case LVAL_FUNCTION: return "Function";
   case LVAL_NUMBER: return "Number";
-  case LVAL_DECIMAL: return "Decimals";
+  case LVAL_DECIMAL: return "Decimal";
+  case LVAL_BOOLEAN: return "Boolean";
   case LVAL_ERROR: return "Error";
   case LVAL_SYMBOL: return "Symbol";
   case LVAL_SEXPR: return "S-Expression";
@@ -100,11 +105,13 @@ char* ltype_name(int type) {
 }
 
 #define LVAL_ASSERT(_v_, _cond_, _fmt_, ...)	\
-  if(!(_cond_)) {				\
-    lval_delete(_v_);				\
-    return lval_err(_fmt_, ##__VA_ARGS__);	\
-  }
-    
+  do {						\
+    if(!(_cond_)) {				\
+      lval_delete(_v_);				\
+      return lval_err(_fmt_, ##__VA_ARGS__);	\
+    }						\
+  } while(0)
+
 lval_t* lval_number(long number) {
   lval_t* val = malloc(sizeof(lval_t));
   val->type = LVAL_NUMBER;
@@ -118,6 +125,16 @@ lval_t* lval_decimal(double decimal) {
   val->value.decimal = decimal;
   return val;
 }
+
+lval_t* lval_boolean(char value) {
+  lval_t* val = malloc(sizeof(lval_t));
+  val->type = LVAL_BOOLEAN;
+  val->value.boolean = value;
+  return val;
+}
+
+#define VAL_BOOL_TRUE lval_boolean(1)
+#define VAL_BOOL_FALSE lval_boolean(0)
 
 lval_t* lval_error(char* e) {
   lval_t* val = malloc(sizeof(lval_t));
@@ -172,6 +189,7 @@ void lval_delete(lval_t* v) {
   switch(v->type) {
     case LVAL_NUMBER:
     case LVAL_DECIMAL:
+    case LVAL_BOOLEAN:
       break;
 
     case LVAL_FUNCTION:
@@ -210,6 +228,7 @@ lval_t* lval_copy(lval_t* v) {
   switch(x->type) {
     case LVAL_NUMBER:
     case LVAL_DECIMAL:
+    case LVAL_BOOLEAN:
       x->value = v->value;
       break;
   
@@ -298,6 +317,8 @@ lval_t* lenv_get(lenv_t* env, lval_t* key) {
 
 typedef void(*lenv_var_assignment)(lenv_t*, lval_t*, lval_t*);
 
+int validate_name(char* name);
+
 void lenv_put(lenv_t* env, lval_t* key, lval_t* value) {
   for(int i = 0; i < env->count; ++i) {
     // replace existing value
@@ -344,6 +365,18 @@ lval_t* lval_read_decimal(mpc_ast_t* node) {
   return lval_decimal(x);
 }
 
+lval_t* lval_read_boolean(mpc_ast_t* node) {
+  if(strcmp(node->contents, "true") == 0) {
+    return VAL_BOOL_TRUE;
+  }
+  else if(strcmp(node->contents, "false") == 0) {
+    return VAL_BOOL_FALSE;
+  }
+
+  return lval_err("Tried to read a boolean, "
+		  "but '%s' is not a valid value.", node->contents);
+}
+
 lval_t* lval_add(lval_t* v, lval_t* child) {
   v->value.sexpr.count++;
   v->value.sexpr.cell = realloc(v->value.sexpr.cell, sizeof(lval_t*) * v->value.sexpr.count);
@@ -354,6 +387,7 @@ lval_t* lval_add(lval_t* v, lval_t* child) {
 lval_t* lval_read(mpc_ast_t* node) {
   if(strstr(node->tag, "number")) return lval_read_number(node);
   if(strstr(node->tag, "decimal")) return lval_read_decimal(node);
+  if(strstr(node->tag, "boolean")) return lval_read_boolean(node);
 
   if(strstr(node->tag, "symbol")) return lval_symbol(node->contents);
   
@@ -397,6 +431,9 @@ void lval_print(lval_t* v) {
   switch(v->type) {
     case LVAL_NUMBER: printf("%li", v->value.number); break;
     case LVAL_DECIMAL: printf("%f", v->value.decimal); break;
+    case LVAL_BOOLEAN:
+      printf("%s", (v->value.boolean ? "true" : "false"));
+      break;
     case LVAL_ERROR: printf("Error: %s", v->value.error); break;
     case LVAL_SYMBOL: printf("%s", v->value.symbol); break;
     case LVAL_SEXPR: lval_expr_print(v, '(', ')'); break; 
@@ -533,22 +570,29 @@ lval_t* builtin_op(lenv_t* e, lval_t* v, char* op) {
 	      (_fn_), (_n_))
 
 #define LVAL_ASSERT_TYPE_EQ(_a_, _x_, _y_, _fn_)	\
+  do { char *TX = ltype_name(_x_), *TY = ltype_name(_y_); \
   LVAL_ASSERT((_a_), (_x_) == (_y_), \
 	      "Passed an invalid type to '%s'. " \
 	      "Got %s, expected %s.", (_fn_), \
-	      ltype_name(_x_), ltype_name(_y_));
+	      TX, TY);			      \
+  } while(0)
 
 #define LVAL_ASSERT_SELF_TYPE_EQ(_a_, _t_, _fn_)	\
+  do { char *TX = ltype_name((_a_)->type), *TY = ltype_name(_t_); \
   LVAL_ASSERT((_a_), (_a_)->type == (_t_), \
 	      "Passed an invalid type to '%s'. " \
 	      "Got %s, expected %s.", (_fn_), \
-	      ltype_name((_a_)->type), ltype_name(_t_));
+	      TX, TY);			      \
+  } while(0)
 
 #define LVAL_ASSERT_CELL_TYPE_EQ(_a_, _n_, _t_, _fn_)	\
-  LVAL_ASSERT((_a_), (_a_)->value.sexpr.cell[_n_]->type == (_t_),			\
+  do { char *TX = ltype_name((_a_)->value.sexpr.cell[_n_]->type),     \
+            *TY = ltype_name(_t_);				      \
+  LVAL_ASSERT((_a_), (_a_)->value.sexpr.cell[_n_]->type == (_t_),     \
 	      "Passed an invalid type to '%s'. " \
 	      "Got %s, expected %s.", (_fn_), \
-	      ltype_name((_a_)->value.sexpr.cell[_n_]->type), ltype_name(_t_));
+	      TX, TY); \
+  } while(0)
 
 lval_t* builtin_head(lenv_t* e, lval_t* v) {
   LVAL_ASSERT_ARGS_EQ(v, 1, "head");
@@ -691,9 +735,12 @@ lval_t* builtin_var(lenv_t* e, lval_t* v, char* func, lenv_var_assignment put) {
   /* First argument is Symbol List */
   lval_t* symbols = v->value.sexpr.cell[0];
 
-  /* Make sure that each value in the list is actually a Symbol */
+  /* Make sure that each value in the list is actually a Symbol
+     and that they are not reserved keyword */
   for(int i = 0; i < symbols->value.sexpr.count; ++i) {
     LVAL_ASSERT_TYPE_EQ(v, symbols->value.sexpr.cell[i]->type, LVAL_SYMBOL, func);
+    LVAL_ASSERT(v, validate_name(symbols->value.sexpr.cell[i]->value.symbol),
+	        "Tried to define a variable with a reserved keyword as the name!");
   }
 
   /* Check if number of values equals number of arguments passed */
@@ -754,12 +801,32 @@ lval_t* builtin_lambda(lenv_t* e, lval_t* v) {
   return lval_lambda(formals, body);
 }
 
-void lenv_add_builtin(lenv_t* e, char* name, lbuiltin fun) {
+int validate_name(char* name) {
+  char const* reserved[] = {
+    "+", "-", "/", "*", "%", "&", "^",
+    "def", "=", "\\", "print-env", "exit",
+    "true", "false", "typeof"
+  };
+  int const size = sizeof(reserved) / sizeof(char*);
+
+  for(int i = 0; i < size; ++i) {
+    if (strcmp(reserved[i], name) == 0) {
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+void lenv_add_variable(lenv_t* e, char* name, lval_t* value) {
   lval_t* key = lval_symbol(name);
-  lval_t* value = lval_fun(fun);
   lenv_put(e, key, value);
   lval_delete(key);
   lval_delete(value);
+}
+
+void lenv_add_builtin(lenv_t* e, char* name, lbuiltin fun) {
+  lenv_add_variable(e, name, lval_fun(fun));
 }
 
 void lenv_add_builtins(lenv_t* e) {
