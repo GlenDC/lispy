@@ -728,6 +728,218 @@ lval_t* builtin_pow(lenv_t* e, lval_t* v) {
   return builtin_op(e, v, "^");
 }
 
+typedef char(*order_func)(long double, long double);
+
+#define ORDER_FUNC(_PREFIX_, _OPERATOR_)		  \
+  char order_ ## _PREFIX_ (long double x, long double y) { \
+    return x _OPERATOR_ y;				  \
+  }
+
+ORDER_FUNC(lt, <)
+ORDER_FUNC(gt, >)
+ORDER_FUNC(lteq, <=)
+ORDER_FUNC(gteq, >=)
+
+lval_t* builtin_order(lenv_t* e, lval_t* v, char* func, order_func op) {
+  LVAL_ASSERT_ARGS_EQ(v, 2, func);
+
+  // make sure the types are correct
+  long double values[2];
+  for(int i = 0; i < 2; ++i) {
+    lval_t* cell = v->value.sexpr.cell[i];
+    int type = cell->type;
+    LVAL_ASSERT(v, type == LVAL_NUMBER || type == LVAL_DECIMAL,
+		"Invalid argument (%i) passed to '%s'. "
+		"Got %s, expected %s or %s.",
+		i, func, ltype_name(type),
+		ltype_name(LVAL_NUMBER), ltype_name(LVAL_DECIMAL));
+    values[i] = (long double)
+      (cell->type == LVAL_NUMBER ? cell->value.number : cell->value.decimal);
+  }
+
+  char result = op(values[0], values[1]);
+  lval_delete(v);
+  return lval_boolean(result);
+}
+
+lval_t* builtin_lt(lenv_t* e, lval_t* v) {
+  return builtin_order(e, v, "<", order_lt);
+}
+
+lval_t* builtin_gt(lenv_t* e, lval_t* v) {
+  return builtin_order(e, v, ">", order_gt);
+}
+
+lval_t* builtin_lteq(lenv_t* e, lval_t* v) {
+  return builtin_order(e, v, "<=", order_lteq);
+}
+
+lval_t* builtin_gteq(lenv_t* e, lval_t* v) {
+  return builtin_order(e, v, ">=", order_gteq);
+}
+
+lval_t* builtin_not(lenv_t* e, lval_t* v) {
+  LVAL_ASSERT_ARGS_EQ(v, 1, "not");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 0, LVAL_BOOLEAN, "not");
+
+  char result = (v->value.sexpr.cell[0]->value.boolean == 0);
+  lval_delete(v);
+  return lval_boolean(result);
+}
+
+lval_t* builtin_and(lenv_t* e, lval_t* v) {
+  LVAL_ASSERT(v, v->value.sexpr.count >= 2,		     \
+	      "Invalid amount of arguments passed to 'and'. " \
+	      "Got %i, expected at least 2.", 	     \
+	      v->value.sexpr.count);
+
+  // check if they are all boolean
+  // if they are we also short - circuite
+  lval_t* result = NULL;
+  for(int i = 0; i < v->value.sexpr.count; ++i) {
+    if(v->value.sexpr.cell[i]->type != LVAL_BOOLEAN) {
+      result = lval_err("Invalid argument (%i) type passed to 'and'. "
+			"Got %s, expected %s.", i,
+			ltype_name(v->value.sexpr.cell[i]->type),
+			ltype_name(LVAL_BOOLEAN));
+      break;
+    }
+
+    if(v->value.sexpr.cell[i]->value.boolean == 0) {
+      result = VAL_BOOL_FALSE;
+      break;
+    }
+  }
+
+    if(result == NULL) {
+      result = VAL_BOOL_TRUE;
+    }
+  
+  lval_delete(v);
+  return result;
+}
+
+lval_t* builtin_or(lenv_t* e, lval_t* v) {
+  LVAL_ASSERT(v, v->value.sexpr.count >= 2,		     \
+	      "Invalid amount of arguments passed to 'or'. " \
+	      "Got %i, expected at least 2.", 	     \
+	      v->value.sexpr.count);
+
+  // check if they are all boolean
+  // if they are we also short - circuite
+  lval_t* result = NULL;
+  for(int i = 0; i < v->value.sexpr.count; ++i) {
+    if(v->value.sexpr.cell[i]->type != LVAL_BOOLEAN) {
+      result = lval_err("Invalid argument (%i) type passed to 'or'. "
+			"Got %s, expected %s.", i,
+			ltype_name(v->value.sexpr.cell[i]->type),
+			ltype_name(LVAL_BOOLEAN));
+      break;
+    }
+
+    if(v->value.sexpr.cell[i]->value.boolean != 0) {
+      result = VAL_BOOL_TRUE;
+      break;
+    }
+  }
+
+    if(result == NULL) {
+      result = VAL_BOOL_FALSE;
+    }
+  
+  lval_delete(v);
+  return result;
+}
+
+int lval_eq(lval_t* x, lval_t* y) {
+  switch(x->type) {
+    case LVAL_NUMBER:
+      return x->value.number == y->value.number;
+
+    case LVAL_DECIMAL:
+      return x->value.decimal == y->value.decimal;
+
+    case LVAL_BOOLEAN:
+      return x->value.boolean == y->value.boolean;
+
+    case LVAL_SYMBOL:
+      return strcmp(x->value.symbol, y->value.symbol) == 0;
+
+    case LVAL_ERROR:
+      return strcmp(x->value.error, y->value.error) == 0;
+
+    case LVAL_SEXPR:
+    case LVAL_QEXPR:
+      if(x->value.sexpr.count != y->value.sexpr.count) return 0;
+      else {
+	for(int i = 0; i < x->value.sexpr.count; ++i) {
+	  if(!lval_eq(x->value.sexpr.cell[i], y->value.sexpr.cell[i])) {
+	    return 0;
+	  }
+	}
+	return 1;
+      }
+
+    case LVAL_FUNCTION:
+      if(x->value.function.builtin || y->value.function.builtin) {
+	return x->value.function.builtin == y->value.function.builtin;
+      }
+      else {
+	return lval_eq(x->value.function.formals, y->value.function.formals)
+	  && lval_eq(x->value.function.body, y->value.function.body);
+      }
+
+    default:
+      return 0;
+  }
+}
+
+lval_t* builtin_cmp(lenv_t* e, lval_t* v, char* func) {
+  LVAL_ASSERT_ARGS_EQ(v, 2, func);
+
+  // check if the types are compareble
+  lval_t* x = v->value.sexpr.cell[0];
+  lval_t* y = v->value.sexpr.cell[1];
+  LVAL_ASSERT(v, x->type == y->type,
+	      "Unexpected combination of types in '%s'. "
+	      "%s and %s are incomprable.", func,
+	      ltype_name(x->type), ltype_name(y->type));
+
+  char result = (char) lval_eq(x, y);
+  lval_delete(v);
+
+  if(strcmp(func, "!=") == 0) {
+    result = result == 0;
+  }
+  
+  return lval_boolean(result);
+}
+
+lval_t* builtin_eq(lenv_t* e, lval_t* v) {
+  return builtin_cmp(e, v, "==");
+}
+
+lval_t* builtin_neq(lenv_t* e, lval_t* v) {
+  return builtin_cmp(e, v, "!=");
+}
+
+lval_t* builtin_if(lenv_t* e, lval_t* v) {
+  LVAL_ASSERT_ARGS_EQ(v, 3, "if");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 0, LVAL_BOOLEAN, "if");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 1, LVAL_QEXPR, "if");
+  LVAL_ASSERT_CELL_TYPE_EQ(v, 2, LVAL_QEXPR, "if");
+
+  lval_t* value = NULL;
+  if(v->value.sexpr.cell[0]->value.boolean) {
+    value = lval_take(v, 1);
+  } else {
+    value = lval_take(v, 2);
+  }
+
+  value->type = LVAL_SEXPR;
+  return lval_eval(e, value);
+}
+
 lval_t* builtin_var(lenv_t* e, lval_t* v, char* func, lenv_var_assignment put) {
   LVAL_ASSERT_ARGS_EQ(v, 2, func);
   LVAL_ASSERT_CELL_TYPE_EQ(v, 0, LVAL_QEXPR, func);
@@ -803,6 +1015,8 @@ lval_t* builtin_lambda(lenv_t* e, lval_t* v) {
 
 int validate_name(char* name) {
   char const* reserved[] = {
+    "<", ">", "<=", ">=", "==", "!=", "if",
+    "not", "and", "or",
     "+", "-", "/", "*", "%", "&", "^",
     "def", "=", "\\", "print-env", "exit",
     "true", "false", "typeof"
@@ -847,6 +1061,18 @@ void lenv_add_builtins(lenv_t* e) {
   lenv_add_builtin(e, "/", builtin_div);
   lenv_add_builtin(e, "%", builtin_mod);
   lenv_add_builtin(e, "^", builtin_pow);
+
+  /* Logical Functions */
+  lenv_add_builtin(e, "not", builtin_not);
+  lenv_add_builtin(e, "and", builtin_and);
+  lenv_add_builtin(e, "or", builtin_or);
+  lenv_add_builtin(e, "<", builtin_lt);
+  lenv_add_builtin(e, ">", builtin_gt);
+  lenv_add_builtin(e, "<=", builtin_lteq);
+  lenv_add_builtin(e, ">=", builtin_gteq);
+  lenv_add_builtin(e, "==", builtin_eq);
+  lenv_add_builtin(e, "!=", builtin_neq);
+  lenv_add_builtin(e, "if", builtin_if);
 
   /* User Functions */
   lenv_add_builtin(e, "def", builtin_def);
