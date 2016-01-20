@@ -1,7 +1,7 @@
 #ifndef __LISPY_PARSING__
 #define __LISPY_PARSING__
 
-#include "mpc.h"
+#include "mpc/mpc.h"
 
 struct lenv_t;
 struct lval_t;
